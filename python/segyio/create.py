@@ -1,53 +1,29 @@
 import datetime
-import ctypes as ct
+import numpy
 import segyio
+import segyio._segyio as _segyio
+
 
 def default_text_header(iline, xline, offset):
-    return ''.join([
-    "C 1 DATE: %s                                                            ",
-    "C 2 AN INCREASE IN AMPLITUDE EQUALS AN INCREASE IN ACOUSTIC IMPEDANCE           ",
-    "C 3 Written by libsegyio (python)                                               ",
-    "C 4                                                                             ",
-    "C 5                                                                             ",
-    "C 6                                                                             ",
-    "C 7                                                                             ",
-    "C 8                                                                             ",
-    "C 9                                                                             ",
-    "C10                                                                             ",
-    "C11 TRACE HEADER POSITION:                                                      ",
-    "C12   INLINE BYTES %03d-%03d    | OFFSET BYTES %03d-%03d                            ",
-    "C13   CROSSLINE BYTES %03d-%03d |                                                 ",
-    "C14                                                                             ",
-    "C15 END EBCDIC HEADER                                                           ",
-    "C16                                                                             ",
-    "C17                                                                             ",
-    "C18                                                                             ",
-    "C19                                                                             ",
-    "C20                                                                             ",
-    "C21                                                                             ",
-    "C22                                                                             ",
-    "C23                                                                             ",
-    "C24                                                                             ",
-    "C25                                                                             ",
-    "C26                                                                             ",
-    "C27                                                                             ",
-    "C28                                                                             ",
-    "C29                                                                             ",
-    "C30                                                                             ",
-    "C31                                                                             ",
-    "C32                                                                             ",
-    "C33                                                                             ",
-    "C34                                                                             ",
-    "C35                                                                             ",
-    "C36                                                                             ",
-    "C37                                                                             ",
-    "C38                                                                             ",
-    "C39                                                                             ",
-    "C40                                                                            \x80"]) \
-    % (datetime.date.today(), iline, iline + 4, int(offset), int(offset) + 4, xline, xline + 4)
+    lines = {
+        1: "DATE %s" % datetime.date.today().isoformat(),
+        2: "AN INCREASE IN AMPLITUDE EQUALS AN INCREASE IN ACOUSTIC IMPEDANCE",
+        3: "Written by libsegyio (python)",
+        11: "TRACE HEADER POSITION:",
+        12: "  INLINE BYTES %03d-%03d    | OFFSET BYTES %03d-%03d" % (iline, iline + 4, int(offset), int(offset) + 4),
+        13: "  CROSSLINE BYTES %03d-%03d |" % (xline, xline + 4),
+        15: "END EBCDIC HEADER",
+    }
+    rows = segyio.create_text_header(lines)
+    rows = bytearray(rows, 'ascii')  # mutable array of bytes
+    rows[-1] = 128  # \x80 -- Unsure if this is really required...
+    return bytes(rows)  # immutable array of bytes that is compatible with strings
+
 
 def create(filename, spec):
     """Create a new segy file.
+
+    Since v1.1
 
     Create a new segy file with the geometry and properties given by `spec`.
     This enables creating SEGY files from your data. The created file supports
@@ -71,7 +47,7 @@ def create(filename, spec):
             >>> spec = segyio.spec()
             >>> spec.ilines  = [1, 2, 3, 4]
             >>> spec.xlines  = [11, 12, 13]
-            >>> spec.samples = 50
+            >>> spec.samples = list(range(50))
             >>> spec.sorting = 2
             >>> spec.format  = 1
             >>> with segyio.create(path, spec) as f:
@@ -83,7 +59,7 @@ def create(filename, spec):
             ...     spec = segyio.spec()
             ...     spec.sorting = src.sorting
             ...     spec.format = src.format
-            ...     spec.samples = src.samples - 50
+            ...     spec.samples = src.samples[:len(src.samples) - 50]
             ...     spec.ilines = src.ilines
             ...     spec.xline = src.xlines
             ...     with segyio.create(dstpath, spec) as dst:
@@ -91,45 +67,43 @@ def create(filename, spec):
             ...         dst.bin = src.bin
             ...         dst.header = src.header
             ...         dst.trace = src.trace
+    :rtype: segyio.SegyFile
     """
-    f = segyio.file(filename, "w+")
+    f = segyio.SegyFile(filename, "w+")
 
-    f.samples       = spec.samples
-    f.ext_headers   = spec.ext_headers
-    f._bsz          = segyio.file._trace_bsize(f.samples)
-    f._tr0          = -1 + segyio.file._textsize() + \
-                      segyio.file._binheader_size() + \
-                      (spec.ext_headers * segyio.file._textsize())
-    f.sorting       = spec.sorting
-    f._fmt          = spec.format
-    f.offsets       = spec.offsets
-    f.tracecount    = len(spec.ilines) * len(spec.xlines) * spec.offsets
+    f._samples       = numpy.asarray(spec.samples, dtype = numpy.single)
+    f._ext_headers   = spec.ext_headers
+    f._bsz           = _segyio.trace_bsize(len(f.samples))
 
-    f._il           = int(spec.iline)
-    f.ilines        = spec.ilines
-    f._raw_ilines   = (ct.c_uint * len(f.ilines))()
-    for i, x in enumerate(f.ilines):
-        f._raw_ilines[i] = x
+    txt_hdr_sz       = _segyio.textheader_size()
+    bin_hdr_sz       = _segyio.binheader_size()
+    f._tr0           = txt_hdr_sz + bin_hdr_sz + (spec.ext_headers * txt_hdr_sz)
+    f._sorting       = spec.sorting
+    f._fmt           = int(spec.format)
+    f._offsets       = numpy.copy(numpy.asarray(spec.offsets, dtype = numpy.intc))
+    f._tracecount    = len(spec.ilines) * len(spec.xlines) * len(spec.offsets)
 
-    f._xl           = int(spec.xline)
-    f.xlines        = spec.xlines
-    f._raw_xlines   = (ct.c_uint * len(f.xlines))()
-    for i, x in enumerate(f.xlines):
-        f._raw_xlines[i] = x
+    f._il            = int(spec.iline)
+    f._ilines        = numpy.copy(numpy.asarray(spec.ilines, dtype=numpy.intc))
 
+    f._xl            = int(spec.xline)
+    f._xlines        = numpy.copy(numpy.asarray(spec.xlines, dtype=numpy.intc))
 
-    f._iline_length = f._init_iline_length(len(f.xlines))
-    f._iline_stride = f._init_iline_stride(len(f.ilines))
+    line_metrics = _segyio.init_line_metrics(f.sorting, f.tracecount, len(f.ilines), len(f.xlines), len(f.offsets))
 
-    f._xline_length = f._init_xline_length(len(f.ilines))
-    f._xline_stride = f._init_xline_stride(len(f.xlines))
+    f._iline_length = line_metrics['iline_length']
+    f._iline_stride = line_metrics['iline_stride']
+
+    f._xline_length = line_metrics['xline_length']
+    f._xline_stride = line_metrics['xline_stride']
 
     f.text[0] = default_text_header(f._il, f._xl, segyio.TraceField.offset)
-    f.bin     = {   3213: f.tracecount,
-                    3217: 4000,
-                    3221: f.samples,
-                    3225: f.format,
-                    3505: f.ext_headers,
-                }
+    f.bin     = {
+        3213: f.tracecount,
+        3217: 4000,
+        3221: len(f.samples),
+        3225: f.format,
+        3505: f.ext_headers,
+    }
 
     return f

@@ -14,7 +14,7 @@ void mexFunction(int nlhs, mxArray *plhs[],
     char* msg2;
     int err;
 
-    FILE* fp = segyfopen( prhs[ 0 ], "r" );
+    segy_file* fp = segyfopen( prhs[ 0 ], "rb" );
     int first_trace = mxGetScalar( prhs[ 1 ] );
     int last_trace  = mxGetScalar( prhs[ 2 ] );
     int notype      = mxGetScalar( prhs[ 3 ] );
@@ -29,21 +29,23 @@ void mexFunction(int nlhs, mxArray *plhs[],
         goto cleanup;
     }
 
-    if( last_trace != -1 && last_trace < fmt.traces )
-        fmt.traces = (last_trace + 1);
+    // if last_trace was defaulted we assign it to the last trace in the file
+    if( last_trace == -1 )
+        last_trace = fmt.traces - 1;
 
-    fmt.traces -= first_trace;
+    int traces = 1 + (last_trace - first_trace);
+    long long bufsize = (long long)fmt.samples * traces;
 
-    plhs[0] = mxCreateNumericMatrix( fmt.samples, fmt.traces, mxSINGLE_CLASS, mxREAL );
+    plhs[0] = mxCreateNumericMatrix( fmt.samples, traces, mxSINGLE_CLASS, mxREAL );
     float* out = mxGetData( plhs[ 0 ] );
 
-    if( first_trace > fmt.traces ) {
+    if( first_trace > last_trace ) {
         msg1 = "segy:get_traces:bounds";
         msg2 = "first trace must be smaller than last trace";
         goto cleanup;
     }
 
-    for( size_t i = first_trace; i < fmt.traces; ++i ) {
+    for( int i = first_trace; i <= last_trace; ++i ) {
         err = segy_readtrace( fp, i, out, fmt.trace0, fmt.trace_bsize );
         out += fmt.samples;
 
@@ -54,22 +56,22 @@ void mexFunction(int nlhs, mxArray *plhs[],
         }
     }
 
-    fclose( fp );
+    segy_close( fp );
 
     if( notype != -1 )
         fmt.format = notype;
 
-    segy_to_native( fmt.format, fmt.samples * fmt.traces, mxGetData( plhs[ 0 ] ) );
+    segy_to_native( fmt.format, bufsize, mxGetData( plhs[ 0 ] ) );
 
     int interval;
-    segy_get_bfield( binary, BIN_Interval, &interval );
+    segy_get_bfield( binary, SEGY_BIN_INTERVAL, &interval );
     plhs[ 1 ] = mxCreateDoubleScalar( interval );
     plhs[ 2 ] = mxCreateDoubleScalar( fmt.format );
 
     return;
 
 cleanup:
-    fclose( fp );
+    segy_close( fp );
 
 cleanup_fopen:
     mexErrMsgIdAndTxt( msg1, msg2 );
